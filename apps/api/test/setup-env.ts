@@ -1,0 +1,11 @@
+process.env.NODE_ENV = 'test';
+process.env.DATABASE_URL = 'postgresql://outpost:outpost@127.0.0.1:5432/outpost_test';
+process.env.DIRECT_URL = process.env.DATABASE_URL;
+process.env.SUPABASE_URL = 'https://test.supabase.co';
+process.env.SUPABASE_JWT_SECRET = 'test-jwt-secret-for-e2e-only';
+process.env.SUPABASE_JWT_AUDIENCE = 'authenticated';
+process.env.ENCRYPTION_KEY = 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=';
+process.env.WEB_URL = 'http://localhost:5173';
+process.env.CORS_ORIGINS = 'http://localhost:5173';
+process.env.CRON_SECRET = 'test-cron-secret-at-least-32-characters';
+process.env.ALLOW_LOCAL_SCHEDULER = 'false';
