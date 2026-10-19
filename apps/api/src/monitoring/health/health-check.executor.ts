@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   AlertEventType,
+  EgressMode,
   IncidentSeverity,
   IncidentType,
   MonitorHealth,
@@ -8,6 +9,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SafeHttpService } from './safe-http.service';
+import { EgressService } from './egress.service';
 import { IncidentsService } from '../../incidents/incidents.service';
 import { AlertsService } from '../../notifications/alerts.service';
 import { redactSecrets } from '../../common/crypto';
@@ -15,6 +17,7 @@ import { redactSecrets } from '../../common/crypto';
 export interface ExecuteMonitorOptions {
   scheduled?: boolean;
   jobId?: string;
+  region?: string | null;
 }
 
 @Injectable()
@@ -24,6 +27,7 @@ export class HealthCheckExecutor {
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: SafeHttpService,
+    private readonly egress: EgressService,
     private readonly incidents: IncidentsService,
     private readonly alerts: AlertsService,
   ) {}
@@ -41,11 +45,30 @@ export class HealthCheckExecutor {
       return { skipped: true, reason: 'inactive' };
     }
 
+    let proxyUrl: string | null = null;
+    let egressLabel = 'default';
+    if (monitor.egressMode === EgressMode.REGION) {
+      if (!options.region) {
+        return { skipped: true, reason: 'region-worker-required' };
+      }
+      if (monitor.region !== options.region) {
+        return { skipped: true, reason: 'region-changed' };
+      }
+      egressLabel = `region:${options.region}`;
+    } else if (options.region) {
+      return { skipped: true, reason: 'not-region-monitor' };
+    } else if (monitor.egressMode === EgressMode.PROXY) {
+      proxyUrl = this.egress.nextProxy();
+      if (!proxyUrl) throw new Error('No monitoring proxies are configured');
+      egressLabel = 'proxy';
+    }
+
     const result = await this.http.check({
       url: monitor.url,
       method: monitor.method,
       expectedStatusCodes: monitor.expectedStatusCodes,
       timeoutMs: monitor.timeoutMs,
+      proxyUrl,
     });
 
     const runStatus: RunStatus = result.success
@@ -70,6 +93,7 @@ export class HealthCheckExecutor {
             status: runStatus,
             statusCode: result.statusCode,
             latencyMs: result.latencyMs,
+            egress: egressLabel,
             error: result.error ? redactSecrets(result.error, 800) : null,
             checkedAt: now,
           },

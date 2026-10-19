@@ -9,22 +9,29 @@ import {
   type ReactNode,
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { Session } from '@supabase/supabase-js';
-import { supabase, isSupabaseConfigured, supabaseConfigError } from '@/lib/supabase';
-import { api, getApiTeamId, setApiTeamId } from '@/lib/api';
+import { authApi, type SignupResult } from '@/lib/auth-api';
+import { ApiError, errorMessage, getApiTeamId, setApiTeamId } from '@/lib/api';
 import type { AuthMe, TeamMembership, UserProfile } from '@/lib/types';
 
+interface SignupInput {
+  email: string;
+  password: string;
+  fullName?: string;
+  next?: string;
+}
+
 interface AuthContextValue {
-  session: Session | null;
   user: UserProfile | null;
   teams: TeamMembership[];
   activeTeam: TeamMembership | null;
   loading: boolean;
-  configured: boolean;
+  authenticated: boolean;
   loadError: string | null;
+  signIn: (email: string, password: string) => Promise<void>;
+  signUp: (input: SignupInput) => Promise<SignupResult>;
   signOut: () => Promise<void>;
   switchTeam: (teamId: string) => void;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<AuthMe | null>;
   updateUser: (user: UserProfile) => void;
 }
 
@@ -32,7 +39,6 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const [session, setSession] = useState<Session | null>(null);
   const [me, setMe] = useState<AuthMe | null>(null);
   const [activeTeamId, setActiveTeamId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -41,7 +47,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const reset = useCallback(() => {
     requestRef.current += 1;
-    setSession(null);
     setMe(null);
     setActiveTeamId(null);
     setApiTeamId(null);
@@ -50,13 +55,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryClient.clear();
   }, [queryClient]);
 
-  const loadProfile = useCallback(async (nextSession: Session) => {
+  const loadProfile = useCallback(async (): Promise<AuthMe | null> => {
     const requestId = ++requestRef.current;
-    setSession(nextSession);
     setLoading(true);
     try {
-      const data = await api<AuthMe>('/auth/me');
-      if (requestRef.current !== requestId) return;
+      const data = await authApi.me();
+      if (requestRef.current !== requestId) return null;
       setMe(data);
       setActiveTeamId(() => {
         const current = getApiTeamId();
@@ -66,53 +70,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return candidate?.id ?? null;
       });
       setLoadError(null);
+      return data;
     } catch (error) {
-      if (requestRef.current !== requestId) return;
-      setLoadError(
-        error instanceof Error
-          ? error.message
-          : 'Unable to load your Outpost profile. Confirm the API and database are running.',
-      );
+      if (requestRef.current !== requestId) return null;
+      setMe(null);
+      if (error instanceof ApiError && error.status === 401) {
+        setActiveTeamId(null);
+        setApiTeamId(null);
+        setLoadError(null);
+      } else {
+        setLoadError(errorMessage(error));
+      }
+      return null;
     } finally {
       if (requestRef.current === requestId) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    let mounted = true;
-    void supabase.auth.getSession().then(({ data }) => {
-      if (!mounted) return;
-      if (data.session) void loadProfile(data.session);
-      else setLoading(false);
-    });
+    void loadProfile();
+  }, [loadProfile]);
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      if (!mounted) return;
-      if (event === 'SIGNED_OUT' || !nextSession) {
-        reset();
-        return;
-      }
-      if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'USER_UPDATED') {
-        // Defer Supabase calls outside the auth callback to avoid lock contention.
-        window.setTimeout(() => {
-          if (mounted) void loadProfile(nextSession);
-        }, 0);
-      } else {
-        setSession(nextSession);
-      }
-    });
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      await authApi.login(email.trim(), password);
+      await loadProfile();
+    },
+    [loadProfile],
+  );
 
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, [loadProfile, reset]);
+  const signUp = useCallback(
+    async (input: SignupInput) => {
+      const result = await authApi.signup({
+        ...input,
+        email: input.email.trim(),
+        fullName: input.fullName?.trim() || undefined,
+      });
+      if (result.authenticated) await loadProfile();
+      return result;
+    },
+    [loadProfile],
+  );
 
   const signOut = useCallback(async () => {
-    reset();
-    await supabase.auth.signOut();
+    try {
+      await authApi.logout();
+    } catch {
+      // Clearing local state is still the right outcome when the API is unreachable.
+    } finally {
+      reset();
+    }
   }, [reset]);
 
   const switchTeam = useCallback(
@@ -125,12 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [me, queryClient],
   );
 
-  const refresh = useCallback(async () => {
-    const {
-      data: { session: current },
-    } = await supabase.auth.getSession();
-    if (current) await loadProfile(current);
-  }, [loadProfile]);
+  const refresh = useCallback(async () => loadProfile(), [loadProfile]);
 
   const updateUser = useCallback((user: UserProfile) => {
     setMe((current) => (current ? { ...current, user } : current));
@@ -140,13 +142,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const teams = me?.teams ?? [];
     const activeTeam = teams.find((team) => team.id === activeTeamId) ?? null;
     return {
-      session,
       user: me?.user ?? null,
       teams,
       activeTeam,
       loading,
-      configured: isSupabaseConfigured,
-      loadError: isSupabaseConfigured ? loadError : supabaseConfigError,
+      authenticated: Boolean(me),
+      loadError,
+      signIn,
+      signUp,
       signOut,
       switchTeam,
       refresh,
@@ -158,7 +161,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     me,
     refresh,
-    session,
+    signUp,
+    signIn,
     signOut,
     switchTeam,
     updateUser,

@@ -13,12 +13,12 @@ export function AcceptInvitationPage() {
   const { token = '' } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { session, user, loading, refresh, signOut } = useAuth();
+  const { user, loading, refresh, signOut } = useAuth();
 
   const preview = useQuery({
     queryKey: ['invitation-preview', token],
     queryFn: () => api<InvitationPreview>(`/invitations/${encodeURIComponent(token)}`),
-    enabled: Boolean(token && session),
+    enabled: Boolean(token && user),
     retry: false,
   });
 
@@ -63,7 +63,7 @@ export function AcceptInvitationPage() {
               <div className="flex items-center gap-2 py-8 text-xs text-muted-foreground">
                 <Spinner /> Checking your session…
               </div>
-            ) : !session ? (
+            ) : !user ? (
               <div className="space-y-5">
                 <div className="flex size-10 items-center justify-center rounded-md border border-border bg-secondary/40">
                   <Mail className="size-4 text-muted-foreground" />
@@ -161,7 +161,7 @@ export function AcceptInvitationPage() {
           </CardContent>
         </Card>
 
-        {session ? (
+        {user ? (
           <div className="mt-6 flex items-center justify-between text-2xs text-muted-foreground">
             <span>Wrong account?</span>
             <button

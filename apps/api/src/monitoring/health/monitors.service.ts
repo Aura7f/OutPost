@@ -1,9 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { MonitorHealth, MonitorMethod } from '@prisma/client';
+import { MonitorHealth, MonitorMethod, EgressMode } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../audit/audit.service';
 import { ProjectsService } from '../../projects/projects.service';
 import { SsrfGuard } from './ssrf-guard';
+import { EgressService } from './egress.service';
 import { HealthCheckExecutor } from './health-check.executor';
 import { pagination, parseDate, percent, timeBucket } from '../../common/utils';
 import type { AuthenticatedUser, TeamContext } from '../../common/types';
@@ -21,9 +23,18 @@ export class MonitorsService {
     private readonly prisma: PrismaService,
     private readonly projects: ProjectsService,
     private readonly ssrf: SsrfGuard,
+    private readonly egress: EgressService,
     private readonly executor: HealthCheckExecutor,
     private readonly audit: AuditService,
   ) {}
+
+  egressOptions() {
+    return {
+      default: true,
+      proxy: { enabled: this.egress.hasProxies(), count: this.egress.proxyCount() },
+      regions: this.egress.regionList(),
+    };
+  }
 
   async list(team: TeamContext, projectId: string) {
     await this.projects.requireProject(team, projectId);
@@ -65,6 +76,7 @@ export class MonitorsService {
     if (!expectedStatusCodes.length) throw new BadRequestException('At least one expected status code is required');
     const intervalSeconds = dto.intervalSeconds ?? 300;
     const active = dto.active ?? true;
+    const egress = this.egress.assertChoice(dto.egressMode ?? EgressMode.DEFAULT, dto.region);
     const monitor = await this.prisma.monitor.create({
       data: {
         projectId,
@@ -76,6 +88,8 @@ export class MonitorsService {
         timeoutMs: dto.timeoutMs ?? 10_000,
         intervalSeconds,
         active,
+        egressMode: egress.mode,
+        region: egress.region,
         failureThreshold: dto.failureThreshold ?? 3,
         lastStatus: MonitorHealth.UNKNOWN,
         nextRunAt: active ? new Date(Date.now() + intervalSeconds * 1000) : null,
@@ -104,6 +118,10 @@ export class MonitorsService {
 
     const active = dto.active ?? monitor.active;
     const intervalSeconds = dto.intervalSeconds ?? monitor.intervalSeconds;
+    const egress = this.egress.assertChoice(
+      dto.egressMode ?? monitor.egressMode,
+      dto.region !== undefined ? dto.region : monitor.region,
+    );
     const updated = await this.prisma.monitor.update({
       where: { id: monitor.id },
       data: {
@@ -117,6 +135,8 @@ export class MonitorsService {
         ...(dto.intervalSeconds !== undefined ? { intervalSeconds: dto.intervalSeconds } : {}),
         ...(dto.failureThreshold !== undefined ? { failureThreshold: dto.failureThreshold } : {}),
         ...(dto.serviceId !== undefined ? { serviceId: dto.serviceId || null } : {}),
+        egressMode: egress.mode,
+        region: egress.region,
         active,
         nextRunAt: active ? new Date(Date.now() + intervalSeconds * 1000) : null,
       },
@@ -156,9 +176,35 @@ export class MonitorsService {
   async run(user: AuthenticatedUser, team: TeamContext, monitorId: string) {
     const monitor = await this.prisma.monitor.findFirst({
       where: { id: monitorId, project: { teamId: team.teamId } },
-      select: { id: true, projectId: true },
+      select: { id: true, projectId: true, egressMode: true, region: true },
     });
     if (!monitor) throw new NotFoundException('Monitor not found');
+
+    if (monitor.egressMode === EgressMode.REGION) {
+      const job = await this.prisma.monitoringJob.create({
+        data: {
+          type: 'HEALTH_CHECK',
+          status: 'QUEUED',
+          dedupeKey: `health-manual:${monitor.id}:${randomUUID()}`,
+          monitorId: monitor.id,
+          region: monitor.region,
+          scheduledFor: new Date(),
+          maxAttempts: 2,
+        },
+        select: { id: true },
+      });
+      await this.audit.log({
+        teamId: team.teamId,
+        actorId: user.profileId,
+        projectId: monitor.projectId,
+        action: 'monitor.manual_check',
+        resourceType: 'Monitor',
+        resourceId: monitor.id,
+        metadata: { jobId: job.id, region: monitor.region },
+      });
+      return { queued: true, jobId: job.id, region: monitor.region };
+    }
+
     const run = await this.executor.execute(monitor.id);
     await this.audit.log({
       teamId: team.teamId,

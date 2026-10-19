@@ -9,18 +9,18 @@ The repository is a production-oriented npm-workspaces monorepo:
 | Workspace | Stack | Purpose |
 | --- | --- | --- |
 | `apps/web` | React 18, Vite, TypeScript, Tailwind, Radix UI, TanStack Query, Recharts | Tenant-aware dashboard and public report pages |
-| `apps/api` | NestJS 10, Prisma 5, PostgreSQL/Supabase, Passport-less Supabase JWT verification | Multi-tenant API, schedulers, checks, ingestion, alerts, reports |
+| `apps/api` | NestJS 10, Prisma 5, PostgreSQL/Supabase, Supabase Auth BFF | Multi-tenant API, HTTP-only sessions, schedulers, checks, ingestion, alerts, reports |
 | `packages/sdk` | NestJS module | Optional error ingestion SDK for Node/NestJS services |
 
 ## Architecture
 
 ```text
-Browser (Supabase PKCE session)
-        │  Bearer JWT + X-Team-Id
+Browser (HTTP-only session cookies)
+        │  Cookie + X-Team-Id
         ▼
 apps/web ──────────────► apps/api (NestJS) ──────► Supabase PostgreSQL
                               │                      (Prisma, pooled URL)
-                              ├── Supabase Auth (JWKS/JWT verification)
+                              ├── Supabase Auth (login/signup/refresh, JWKS verification)
                               ├── Supabase REST RPC (heartbeat, anon key)
                               ├── Customer PostgreSQL (read-only metrics role)
                               ├── Resend (alerts, invites, report email)
@@ -37,7 +37,7 @@ Supabase Cron (pg_cron + pg_net) ──► POST /v1/internal/cron/dispatch
 
 Every tenant route is protected by:
 
-1. `JwtAuthGuard` — verifies the Supabase JWT against the legacy secret or JWKS and upserts the local profile.
+1. `JwtAuthGuard` — reads the HTTP-only session cookie (or `Authorization: Bearer` for API clients), verifies the Supabase JWT against the legacy secret or JWKS, and upserts the local profile.
 2. `TeamScopeGuard` — resolves `X-Team-Id` or `:teamId`, rejects mismatched contexts, and verifies membership server-side.
 3. `RolesGuard` — enforces `OWNER` / `ADMIN` / `VIEWER` requirements per handler.
 
@@ -52,6 +52,8 @@ Services additionally scope every query by `teamId`. The database migration enab
 - Error ingestion sanitizes nested metadata, stack traces, query strings, JWTs, authorization headers, cookies, and connection strings. Request bodies are not collected.
 - Report snapshots exclude credentials, raw SQL, request bodies, and complete stack traces. Share links expire and can be revoked.
 - Cron dispatch requires `X-Cron-Secret`; readiness probes are excluded from the `/v1` prefix.
+- Auth is handled by the API (BFF): the browser never sees Supabase keys or tokens. Login, signup, refresh, logout, recovery, and verification links run server-side, and sessions live in `HttpOnly`, `SameSite` cookies.
+- Cookie-authenticated mutations reject unknown `Origin` headers, and CORS is restricted to the configured web origin with credentials enabled.
 - Helmet, compression, strict DTO validation, CORS allow-listing, rate limiting, and redacted job errors.
 
 ## Repository layout
@@ -76,7 +78,7 @@ apps/
     src/
       pages/               # all authenticated and public screens
       components/          # UI kit, app shell, charts, route guards
-      contexts/ lib/       # auth, API client, Supabase, types, formatting
+      contexts/ lib/       # auth, API client, types, formatting
 packages/
   sdk/                     # NestJS error ingestion SDK
 docs/
@@ -94,12 +96,12 @@ npm install
 
 # API configuration
 cp apps/api/.env.example apps/api/.env
-# Fill DATABASE_URL, DIRECT_URL, SUPABASE_URL, SUPABASE_JWT_SECRET or JWKS,
-# ENCRYPTION_KEY, WEB_URL, and CRON_SECRET.
+# Fill DATABASE_URL, DIRECT_URL, SUPABASE_URL, SUPABASE_ANON_KEY,
+# SUPABASE_JWT_SECRET or JWKS, ENCRYPTION_KEY, WEB_URL, and CRON_SECRET.
 
 # Web configuration
 cp apps/web/.env.example apps/web/.env
-# Fill VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.
+# Only VITE_API_URL is needed; auth runs through the API.
 
 npm run db:generate
 npm run db:deploy       # or: npm run db:migrate (development)
@@ -135,6 +137,7 @@ Required in all environments:
 | `DATABASE_URL` | Pooled Supabase PostgreSQL URL used by the API |
 | `DIRECT_URL` | Direct URL used by Prisma migrations |
 | `SUPABASE_URL` | Project URL, also used to derive the JWKS endpoint |
+| `SUPABASE_ANON_KEY` | Publishable/anon key used server-side to call Supabase Auth |
 | `ENCRYPTION_KEY` | Base64-encoded 32-byte AES key |
 | `WEB_URL` | Public web origin for invites and report links |
 
@@ -147,27 +150,53 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"  # E
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"     # CRON_SECRET
 ```
 
+`SUPABASE_ANON_KEY` must be the publishable/anon key, never the secret or service-role key; startup validation rejects secret keys.
+
 JWT verification supports both Supabase signing models:
 
 - Legacy projects: set `SUPABASE_JWT_SECRET`.
 - New projects: leave the secret empty and set `SUPABASE_JWKS_URL` or use the derived `/_auth/v1/.well-known/jwks.json` endpoint.
 
-See `apps/api/.env.example` for the full list, including local scheduler, SSRF, OpenTelemetry, email, and rate-limit controls.
+Session cookies are `HttpOnly` and `SameSite=Lax` by default, with `Secure` enabled in production. Set `AUTH_COOKIE_SAMESITE=none` only when the web and API origins are on different sites and both use HTTPS. See `apps/api/.env.example` for the full list, including local scheduler, SSRF, OpenTelemetry, email, and rate-limit controls.
 
 ### Web (`apps/web/.env`)
 
 | Variable | Notes |
 | --- | --- |
 | `VITE_API_URL` | API origin. Leave empty for same-origin `/v1` behind a proxy |
-| `VITE_SUPABASE_URL` | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | Supabase anon/publishable key (never service-role) |
+
+The web app has no Supabase URL or key: all authentication requests go through the API.
+
+### Authentication flow
+
+1. `POST /v1/auth/login` authenticates against Supabase Auth server-side and sets `outpost_access` and `outpost_refresh` cookies (`HttpOnly`).
+2. The browser calls `/v1/*` with cookies; the API verifies the JWT and resolves the team from `X-Team-Id`.
+3. `POST /v1/auth/refresh` rotates the session when the access token expires; the web client retries the original request once.
+4. Email verification and recovery links land on `/auth/callback`; the SPA posts the one-time tokens to `/v1/auth/callback`, which validates them and sets cookies.
+5. `POST /v1/auth/logout` revokes the Supabase session and clears the cookies.
+
+### Monitoring egress (optional)
+
+Each monitor chooses where its checks originate: the API host (`DEFAULT`), a rotating
+proxy pool (`PROXY`), or a regional checker worker (`REGION`).
+
+| Variable | Notes |
+| --- | --- |
+| `MONITOR_PROXY_URLS` | Comma-separated HTTP(S) proxy URLs, rotated per check for `PROXY` monitors |
+| `CHECKER_REGIONS` | Comma-separated region ids exposed in the monitor form |
+| `WORKER_REGION` | Empty on API instances; one region id on each checker worker |
+| `CHECKER_POLL_SECONDS` | How often a checker worker polls the job queue (default 10) |
+
+Run a checker worker from the same build with `WORKER_REGION=ap-south-1 npm run start:checker --workspace @outpost/api`.
+Workers share PostgreSQL, claim jobs with `SKIP LOCKED`, and only take jobs for their region.
 
 ## Supabase configuration
 
 1. **Auth URLs** — set the Site URL to the web origin, and add redirect URLs:
    - `http://localhost:5173/auth/callback`
    - `https://your-web-domain/auth/callback`
-   - `https://your-web-domain/reset-password`
+
+   Verification and recovery emails redirect to `/auth/callback`; recovery sessions are then sent to `/reset-password` by the SPA.
 2. **Email** — enable email/password auth and keep confirmation enabled. The app resends verification links through Supabase.
 3. **Database** — use the pooled connection for `DATABASE_URL` and the direct connection for `DIRECT_URL`.
 4. **Migrations** — run `npm run db:deploy`. The second migration enables RLS and revokes direct PostgREST access for `anon`/`authenticated`.
@@ -178,11 +207,11 @@ The database role used by Prisma must be the Supabase `postgres` role (table own
 
 ## API surface
 
-All tenant routes live under `/v1`, require a Supabase bearer token, and use `X-Team-Id` (or a `:teamId` path parameter). Highlights:
+All tenant routes live under `/v1`, require an authenticated session (HTTP-only cookie, or a bearer token for API clients), and use `X-Team-Id` (or a `:teamId` path parameter). Highlights:
 
 | Area | Routes |
 | --- | --- |
-| Auth | `/v1/auth/me`, `/v1/auth/sync`, `/v1/auth/config` |
+| Auth | `/v1/auth/login`, `/v1/auth/signup`, `/v1/auth/refresh`, `/v1/auth/logout`, `/v1/auth/recover`, `/v1/auth/resend-verification`, `/v1/auth/callback`, `/v1/auth/reset-password`, `/v1/auth/me`, `/v1/auth/config` |
 | Teams | `/v1/teams`, `/v1/teams/:teamId`, members, ownership transfer, leave |
 | Invitations | `/v1/teams/:teamId/invitations`, `/v1/invitations/:token`, accept/decline |
 | Projects | `/v1/projects`, dashboard, ingestion-key rotation, services |

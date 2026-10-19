@@ -8,6 +8,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
 import express from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
@@ -54,6 +55,7 @@ async function bootstrap(): Promise<void> {
   app.use(compression());
   app.use(express.json({ limit: '2mb' }));
   app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+  app.use(cookieParser());
 
   const configuredOrigins = (
     config.get<string>('CORS_ORIGINS') ||
@@ -67,6 +69,7 @@ async function bootstrap(): Promise<void> {
 
   app.enableCors({
     origin: allowAllOrigins ? true : configuredOrigins,
+    credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
       'Authorization',
@@ -98,9 +101,9 @@ async function bootstrap(): Promise<void> {
       new DocumentBuilder()
         .setTitle('Outpost API')
         .setDescription(
-          'Multi-tenant backend monitoring and observability. ' +
-            'All tenant routes require a Supabase JWT and an X-Team-Id header. ' +
-            'Team access is verified server-side on every request.',
+                      'Multi-tenant backend monitoring and observability. ' +
+            'All tenant routes require an authenticated session (HTTP-only cookie or bearer token) ' +
+            'and an X-Team-Id header. Team access is verified server-side on every request.',
         )
         .setVersion('1.0.0')
         .addBearerAuth(

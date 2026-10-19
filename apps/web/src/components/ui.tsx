@@ -4,7 +4,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
 import * as SwitchPrimitive from '@radix-ui/react-switch';
 import * as TabsPrimitive from '@radix-ui/react-tabs';
-import { Slot } from '@radix-ui/react-slot';
+import { Slot, Slottable } from '@radix-ui/react-slot';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { ChevronDown, Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -59,7 +59,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         {...props}
       >
         {loading ? <Loader2 className="animate-spin" /> : null}
-        {children}
+        <Slottable>{children}</Slottable>
       </Comp>
     );
   },

@@ -54,6 +54,12 @@ export class ProjectMonitorsController {
 export class MonitorsController {
   constructor(private readonly monitors: MonitorsService) {}
 
+  @Get('egress/options')
+  @ApiOperation({ summary: 'Available egress strategies (default, proxy pool, checker regions)' })
+  egressOptions() {
+    return this.monitors.egressOptions();
+  }
+
   @Get(':monitorId')
   get(@CurrentTeam() team: TeamContext, @Param('monitorId') monitorId: string) {
     return this.monitors.get(team, monitorId);

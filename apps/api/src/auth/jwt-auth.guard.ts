@@ -1,6 +1,7 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -12,6 +13,9 @@ import { createRemoteJWKSet, decodeJwt, jwtVerify, JWTPayload } from 'jose';
 import { PrismaService } from '../prisma/prisma.service';
 import { IS_PUBLIC_KEY } from '../common/decorators';
 import type { OutpostRequest } from '../common/types';
+import { ACCESS_COOKIE } from './auth-cookies';
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -25,19 +29,25 @@ export class JwtAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<OutpostRequest>();
+    if (
+      !SAFE_METHODS.has(request.method.toUpperCase()) &&
+      !this.isAllowedOrigin(request.headers.origin)
+    ) {
+      throw new ForbiddenException('Cross-site request blocked');
+    }
+
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
     if (isPublic) return true;
 
-    const request = context.switchToHttp().getRequest<OutpostRequest>();
     const header = request.headers.authorization;
-    if (!header?.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Missing bearer token');
-    }
-    const token = header.slice(7).trim();
-    if (!token) throw new UnauthorizedException('Missing bearer token');
+    const bearer = header?.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    const cookieToken = request.cookies?.[ACCESS_COOKIE];
+    const token = bearer || cookieToken;
+    if (!token) throw new UnauthorizedException('Authentication required');
 
     let payload: JWTPayload;
     try {
@@ -74,6 +84,7 @@ export class JwtAuthGuard implements CanActivate {
       select: { id: true, fullName: true, avatarUrl: true, email: true },
     });
 
+    request.accessToken = token;
     request.user = {
       profileId: profile.id,
       supabaseUserId,
@@ -82,6 +93,20 @@ export class JwtAuthGuard implements CanActivate {
       avatarUrl: profile.avatarUrl,
     };
     return true;
+  }
+
+  private isAllowedOrigin(origin: string | undefined): boolean {
+    if (!origin) return true;
+    const configured = (
+      this.config.get<string>('CORS_ORIGINS') ||
+      this.config.get<string>('WEB_URL') ||
+      'http://localhost:5173'
+    )
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (configured.includes('*')) return true;
+    return configured.some((allowed) => allowed.replace(/\/+$/, '') === origin);
   }
 
   private async verifyToken(token: string): Promise<JWTPayload> {

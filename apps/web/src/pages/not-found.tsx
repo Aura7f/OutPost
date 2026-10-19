@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/auth-context';
 import { Button, Card, CardContent } from '@/components/ui';
 
 export function NotFoundPage() {
-  const { session } = useAuth();
+  const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -42,9 +42,9 @@ export function NotFoundPage() {
 
             <div className="mt-6 flex flex-col gap-2 sm:flex-row">
               <Button asChild className="sm:flex-1">
-                <Link to={session ? '/overview' : '/'}>
+                <Link to={user ? '/overview' : '/'}>
                   <LayoutDashboard />
-                  {session ? 'Open workspace' : 'Back to Outpost'}
+                  {user ? 'Open workspace' : 'Back to Outpost'}
                 </Link>
               </Button>
               <Button

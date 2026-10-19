@@ -1,13 +1,12 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertCircle, ArrowLeft, MailCheck, Send } from 'lucide-react';
-import { supabase, supabaseConfigError } from '@/lib/supabase';
-import { useAuth } from '@/contexts/auth-context';
+import { authApi } from '@/lib/auth-api';
+import { errorMessage } from '@/lib/api';
 import { AuthShell } from '@/components/auth-shell';
 import { Button, Input, Label } from '@/components/ui';
 
 export function VerifyEmailPage() {
-  const { configured } = useAuth();
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
@@ -15,23 +14,16 @@ export function VerifyEmailPage() {
 
   async function resend(event: React.FormEvent) {
     event.preventDefault();
-    if (!configured) {
-      setError(supabaseConfigError);
-      return;
-    }
     setLoading(true);
     setError(null);
-    const { error: authError } = await supabase.auth.resend({
-      type: 'signup',
-      email: email.trim(),
-      options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
-    });
-    setLoading(false);
-    if (authError) {
-      setError(authError.message);
-      return;
+    try {
+      await authApi.resendVerification(email.trim());
+      setSent(true);
+    } catch (authError) {
+      setError(errorMessage(authError));
+    } finally {
+      setLoading(false);
     }
-    setSent(true);
   }
 
   return (

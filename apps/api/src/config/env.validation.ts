@@ -8,10 +8,34 @@ export function validateEnvironment(config: Record<string, unknown>): Record<str
   const errors: string[] = [];
   const isProduction = env.NODE_ENV === 'production';
 
-  const required = ['DATABASE_URL', 'SUPABASE_URL', 'ENCRYPTION_KEY'];
+  const required = ['DATABASE_URL', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'ENCRYPTION_KEY'];
   for (const key of required) {
     if (!env[key] || String(env[key]).trim().length === 0) errors.push(`${key} is required`);
   }
+
+  const anonKey = String(env.SUPABASE_ANON_KEY ?? '').trim();
+  if (anonKey.startsWith('sb_secret_')) {
+    errors.push('SUPABASE_ANON_KEY must be the publishable/anon key, never the secret key');
+  } else if (anonKey.split('.').length === 3) {
+    try {
+      const payload = JSON.parse(
+        Buffer.from(anonKey.split('.')[1], 'base64url').toString('utf8'),
+      ) as { role?: string };
+      if (payload.role === 'service_role') {
+        errors.push('SUPABASE_ANON_KEY must be the publishable/anon key, never the secret key');
+      }
+    } catch {
+      errors.push('SUPABASE_ANON_KEY is not a valid Supabase key');
+    }
+  }
+
+  const sameSite = String(env.AUTH_COOKIE_SAMESITE ?? 'lax').toLowerCase();
+  if (!['lax', 'strict', 'none'].includes(sameSite)) {
+    errors.push('AUTH_COOKIE_SAMESITE must be one of lax, strict, none');
+  } else if (sameSite === 'none' && !isProduction) {
+    errors.push('AUTH_COOKIE_SAMESITE=none requires HTTPS; use lax in development');
+  }
+  env.AUTH_COOKIE_SAMESITE = sameSite;
 
   if (env.ENCRYPTION_KEY) {
     let keyBytes = 0;
@@ -59,8 +83,45 @@ export function validateEnvironment(config: Record<string, unknown>): Record<str
   env.DEFAULT_RETENTION_DAYS = retention;
   env.MONITORING_CONCURRENCY = concurrency;
 
+  const proxies = splitList(env.MONITOR_PROXY_URLS);
+  for (const proxy of proxies) {
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(proxy);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
+      errors.push(`MONITOR_PROXY_URLS contains an invalid proxy URL: ${proxy}`);
+    }
+  }
+
+  const regions = splitList(env.CHECKER_REGIONS);
+  for (const region of regions) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$/.test(region)) {
+      errors.push(`CHECKER_REGIONS contains an invalid region id: ${region}`);
+    }
+  }
+  const workerRegion = String(env.WORKER_REGION ?? '').trim();
+  if (workerRegion && !regions.includes(workerRegion)) {
+    errors.push('WORKER_REGION must be listed in CHECKER_REGIONS');
+  }
+
+  const checkerPoll = Number(env.CHECKER_POLL_SECONDS ?? 10);
+  if (!Number.isInteger(checkerPoll) || checkerPoll < 2 || checkerPoll > 300) {
+    errors.push('CHECKER_POLL_SECONDS must be an integer between 2 and 300');
+  }
+  env.CHECKER_POLL_SECONDS = checkerPoll;
+
   if (errors.length > 0) {
     throw new Error(`Invalid Outpost configuration:\n- ${errors.join('\n- ')}`);
   }
   return env;
+}
+
+function splitList(value: unknown): string[] {
+  return String(value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }

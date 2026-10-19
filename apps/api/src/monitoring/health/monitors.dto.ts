@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
-import { MonitorMethod, RunStatus } from '@prisma/client';
+import { EgressMode, MonitorMethod, RunStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -71,6 +71,24 @@ export class CreateMonitorDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  @ApiPropertyOptional({
+    enum: EgressMode,
+    default: EgressMode.DEFAULT,
+    description: 'Where the outbound check originates: API host, proxy pool, or a checker region',
+  })
+  @IsOptional()
+  @IsEnum(EgressMode)
+  egressMode?: EgressMode;
+
+  @ApiPropertyOptional({
+    description: 'Checker region id. Required when egressMode is REGION.',
+    example: 'ap-south-1',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  region?: string;
 
   @ApiPropertyOptional({ description: 'Optional service id within the same project' })
   @IsOptional()

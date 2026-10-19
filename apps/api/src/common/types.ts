@@ -18,6 +18,7 @@ export interface TeamContext {
 export interface OutpostRequest extends Request {
   user: AuthenticatedUser;
   teamContext?: TeamContext;
+  accessToken?: string;
 }
 
 export interface PaginationQuery {

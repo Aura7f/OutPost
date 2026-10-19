@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { AlertCircle, ArrowRight, MailCheck } from 'lucide-react';
-import { supabase, supabaseConfigError } from '@/lib/supabase';
+import { ArrowRight, MailCheck } from 'lucide-react';
+import { errorMessage } from '@/lib/api';
 import { useAuth } from '@/contexts/auth-context';
 import { AuthShell } from '@/components/auth-shell';
 import { Button, Input, Label } from '@/components/ui';
@@ -9,7 +9,7 @@ import { Button, Input, Label } from '@/components/ui';
 export function SignupPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { configured } = useAuth();
+  const { signUp } = useAuth();
   const from = (location.state as { from?: string } | null)?.from || '/overview';
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -21,10 +21,6 @@ export function SignupPage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!configured) {
-      setError(supabaseConfigError);
-      return;
-    }
     if (password.length < 8) {
       setError('Use at least 8 characters for your password.');
       return;
@@ -35,24 +31,23 @@ export function SignupPage() {
     }
     setLoading(true);
     setError(null);
-    const { data, error: authError } = await supabase.auth.signUp({
-      email: email.trim(),
-      password,
-      options: {
-        data: { full_name: fullName.trim() },
-        emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(from)}`,
-      },
-    });
-    setLoading(false);
-    if (authError) {
-      setError(authError.message);
-      return;
+    try {
+      const result = await signUp({
+        email,
+        password,
+        fullName,
+        next: from,
+      });
+      if (result.authenticated) {
+        navigate(from, { replace: true });
+        return;
+      }
+      setSent(true);
+    } catch (authError) {
+      setError(errorMessage(authError));
+    } finally {
+      setLoading(false);
     }
-    if (data.session) {
-      navigate(from, { replace: true });
-      return;
-    }
-    setSent(true);
   }
 
   if (sent) {
@@ -97,12 +92,6 @@ export function SignupPage() {
         </>
       }
     >
-      {!configured ? (
-        <div className="mb-5 flex gap-2 rounded-md border border-warning/25 bg-warning/5 p-3 text-xs leading-relaxed text-warning">
-          <AlertCircle className="mt-0.5 size-4 shrink-0" />
-          {supabaseConfigError}
-        </div>
-      ) : null}
       <form onSubmit={submit} className="space-y-4">
         <div className="space-y-1.5">
           <Label htmlFor="name">Full name</Label>

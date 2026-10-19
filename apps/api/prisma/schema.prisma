@@ -58,6 +58,12 @@ enum MonitorHealth {
   DOWN
 }
 
+enum EgressMode {
+  DEFAULT
+  PROXY
+  REGION
+}
+
 enum RunStatus {
   SUCCESS
   FAILURE
@@ -325,6 +331,8 @@ model Monitor {
   timeoutMs           Int           @default(10000)
   intervalSeconds     Int           @default(300)
   active              Boolean       @default(true)
+  egressMode          EgressMode    @default(DEFAULT)
+  region              String?
   failureThreshold    Int           @default(3)
   consecutiveFailures Int           @default(0)
   lastStatus          MonitorHealth @default(UNKNOWN)
@@ -352,6 +360,7 @@ model MonitorRun {
   status     RunStatus
   statusCode Int?
   latencyMs  Int?
+  egress     String?
   error      String?
   checkedAt  DateTime  @default(now())
   createdAt  DateTime  @default(now())
@@ -371,6 +380,7 @@ model MonitoringJob {
   integrationId    String?   @db.Uuid
   reportId         String?   @db.Uuid
   reportScheduleId String?   @db.Uuid
+  region           String?
   scheduledFor     DateTime  @default(now())
   lockedAt         DateTime?
   lockedBy         String?
@@ -389,6 +399,7 @@ model MonitoringJob {
   reportSchedule ReportSchedule? @relation(fields: [reportScheduleId], references: [id], onDelete: SetNull)
 
   @@index([status, scheduledFor])
+  @@index([status, region, scheduledFor])
   @@index([lockedAt])
   @@index([type, createdAt])
   @@index([monitorId])

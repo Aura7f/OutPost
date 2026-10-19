@@ -19,12 +19,11 @@ export function FullScreenLoader({ label = 'Loading workspace' }: { label?: stri
 }
 
 export function ProtectedRoute({ children }: { children: ReactNode }) {
-  const { session, loading, configured } = useAuth();
+  const { user, loading } = useAuth();
   const location = useLocation();
 
-  if (!configured) return <Navigate to="/login" replace />;
   if (loading) return <FullScreenLoader label="Verifying session" />;
-  if (!session) {
+  if (!user) {
     return (
       <Navigate
         to="/login"
@@ -46,8 +45,8 @@ export function RequireTeam({ children }: { children: ReactNode }) {
 }
 
 export function RedirectIfAuthenticated({ children }: { children: ReactNode }) {
-  const { session, loading } = useAuth();
+  const { user, loading } = useAuth();
   if (loading) return <FullScreenLoader label="Checking session" />;
-  if (session) return <Navigate to="/overview" replace />;
+  if (user) return <Navigate to="/overview" replace />;
   return <>{children}</>;
 }

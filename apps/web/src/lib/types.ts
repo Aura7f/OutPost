@@ -4,6 +4,7 @@ export type IntegrationType = 'SUPABASE' | 'POSTGRESQL' | 'MYSQL';
 export type IntegrationStatus = 'PENDING' | 'CONNECTED' | 'ERROR' | 'PAUSED';
 export type MonitorMethod = 'GET' | 'HEAD';
 export type MonitorHealth = 'UNKNOWN' | 'UP' | 'DOWN';
+export type EgressMode = 'DEFAULT' | 'PROXY' | 'REGION';
 export type RunStatus = 'SUCCESS' | 'FAILURE' | 'TIMEOUT' | 'CONNECTION_ERROR';
 export type ErrorSeverity = 'FATAL' | 'ERROR' | 'WARNING' | 'INFO';
 export type ErrorStatus = 'UNRESOLVED' | 'RESOLVED' | 'IGNORED';
@@ -139,6 +140,8 @@ export interface Monitor {
   timeoutMs: number;
   intervalSeconds: number;
   active: boolean;
+  egressMode: EgressMode;
+  region: string | null;
   failureThreshold: number;
   consecutiveFailures: number;
   lastStatus: MonitorHealth;
@@ -169,6 +172,7 @@ export interface MonitorRun {
   status: RunStatus;
   statusCode: number | null;
   latencyMs: number | null;
+  egress?: string | null;
   error: string | null;
   checkedAt: string;
   monitor?: {
@@ -225,6 +229,12 @@ export interface MonitorStats {
 
 export interface MonitorRunsResponse extends Page<MonitorRun> {
   monitor: { id: string; name: string; url: string };
+}
+
+export interface EgressOptions {
+  default: boolean;
+  proxy: { enabled: boolean; count: number };
+  regions: string[];
 }
 
 export interface Incident {

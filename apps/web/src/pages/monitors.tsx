@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, errorMessage, queryString } from '@/lib/api';
-import type { HealthOverview, Monitor, ProjectDetail } from '@/lib/types';
+import type { EgressMode, EgressOptions, HealthOverview, Monitor, ProjectDetail } from '@/lib/types';
 import { useProjects } from '@/components/common';
 import { useTeam } from '@/hooks/use-team';
 import {
@@ -71,7 +71,14 @@ export function MonitorsPage() {
   const [intervalSeconds, setIntervalSeconds] = useState(300);
   const [timeoutMs, setTimeoutMs] = useState(10000);
   const [failureThreshold, setFailureThreshold] = useState(3);
+  const [egressMode, setEgressMode] = useState<EgressMode>('DEFAULT');
+  const [region, setRegion] = useState('');
   const [statusCodes, setStatusCodes] = useState('200');
+
+  const egressOptions = useQuery({
+    queryKey: ['monitor-egress-options'],
+    queryFn: () => api<EgressOptions>('/monitors/egress/options'),
+  });
 
   const health = useQuery({
     queryKey: ['health-overview', projectFilter],
@@ -115,6 +122,8 @@ export function MonitorsPage() {
           intervalSeconds,
           timeoutMs,
           failureThreshold,
+          egressMode,
+          ...(egressMode === 'REGION' ? { region } : {}),
           expectedStatusCodes: expected.length ? [...new Set(expected)] : [200],
         },
       });
@@ -125,6 +134,8 @@ export function MonitorsPage() {
       setUrl('');
       setServiceId('');
       setStatusCodes('200');
+      setEgressMode('DEFAULT');
+      setRegion('');
       toast.success('Monitor created and scheduled');
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['health-overview'] }),
@@ -530,6 +541,49 @@ export function MonitorsPage() {
                 </NativeSelect>
               </div>
             </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="monitor-egress">Check origin</Label>
+                <NativeSelect
+                  id="monitor-egress"
+                  value={egressMode}
+                  onChange={(event) => setEgressMode(event.target.value as EgressMode)}
+                >
+                  <option value="DEFAULT">API server IP</option>
+                  <option value="PROXY" disabled={!egressOptions.data?.proxy.enabled}>
+                    Rotating proxy pool
+                  </option>
+                  <option value="REGION" disabled={!egressOptions.data?.regions.length}>
+                    Checker region
+                  </option>
+                </NativeSelect>
+                <p className="text-2xs text-muted-foreground">
+                  Default checks egress from the API host. Proxy rotates through the configured
+                  pool; region checks run on a dedicated checker worker.
+                </p>
+              </div>
+              {egressMode === 'REGION' ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="monitor-region">Region</Label>
+                  <NativeSelect
+                    id="monitor-region"
+                    value={region}
+                    onChange={(event) => setRegion(event.target.value)}
+                    required
+                  >
+                    <option value="">Select a region</option>
+                    {(egressOptions.data?.regions ?? []).map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                  <p className="text-2xs text-muted-foreground">
+                    Deploy a checker worker with WORKER_REGION={region || '<region>'}.
+                  </p>
+                </div>
+              ) : null}
+            </div>
             <div className="flex items-start gap-2 rounded-md border border-border/70 bg-secondary/20 p-3">
               <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-success" />
               <p className="text-2xs leading-relaxed text-muted-foreground">
@@ -544,7 +598,12 @@ export function MonitorsPage() {
               <Button
                 type="submit"
                 loading={createMonitor.isPending}
-                disabled={!projectId || name.trim().length < 2 || !url.trim()}
+                disabled={
+                  !projectId ||
+                  name.trim().length < 2 ||
+                  !url.trim() ||
+                  (egressMode === 'REGION' && !region)
+                }
               >
                 Create monitor
               </Button>

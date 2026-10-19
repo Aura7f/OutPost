@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { AlertCircle, ArrowRight, Eye, EyeOff } from 'lucide-react';
+import { ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
-import { supabase, supabaseConfigError } from '@/lib/supabase';
+import { errorMessage } from '@/lib/api';
 import { useAuth } from '@/contexts/auth-context';
 import { AuthShell } from '@/components/auth-shell';
 import { Button, Input, Label } from '@/components/ui';
@@ -10,7 +10,7 @@ import { Button, Input, Label } from '@/components/ui';
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { configured } = useAuth();
+  const { signIn } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -23,23 +23,17 @@ export function LoginPage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!configured) {
-      setError(supabaseConfigError);
-      return;
-    }
     setLoading(true);
     setError(null);
-    const { error: authError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-    setLoading(false);
-    if (authError) {
-      setError(authError.message);
-      return;
+    try {
+      await signIn(email, password);
+      toast.success('Signed in');
+      navigate(from, { replace: true });
+    } catch (authError) {
+      setError(errorMessage(authError));
+    } finally {
+      setLoading(false);
     }
-    toast.success('Signed in');
-    navigate(from, { replace: true });
   }
 
   return (
@@ -59,12 +53,6 @@ export function LoginPage() {
         </>
       }
     >
-      {!configured ? (
-        <div className="mb-5 flex gap-2 rounded-md border border-warning/25 bg-warning/5 p-3 text-xs leading-relaxed text-warning">
-          <AlertCircle className="mt-0.5 size-4 shrink-0" />
-          {supabaseConfigError}
-        </div>
-      ) : null}
       <form onSubmit={submit} className="space-y-4">
         <div className="space-y-1.5">
           <Label htmlFor="email">Work email</Label>

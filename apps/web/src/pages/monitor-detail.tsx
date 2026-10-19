@@ -16,6 +16,8 @@ import {
 import { toast } from 'sonner';
 import { api, errorMessage, queryString } from '@/lib/api';
 import type {
+  EgressMode,
+  EgressOptions,
   HealthOverview,
   Incident,
   Monitor,
@@ -76,6 +78,8 @@ export function MonitorDetailPage() {
   const [editInterval, setEditInterval] = useState(300);
   const [editTimeout, setEditTimeout] = useState(10000);
   const [editThreshold, setEditThreshold] = useState(3);
+  const [editEgressMode, setEditEgressMode] = useState<EgressMode>('DEFAULT');
+  const [editRegion, setEditRegion] = useState('');
   const [editCodes, setEditCodes] = useState('200');
 
   const monitor = useQuery({
@@ -104,6 +108,10 @@ export function MonitorDetailPage() {
     queryKey: ['health-overview'],
     queryFn: () => api<HealthOverview>('/health/overview'),
   });
+  const egressOptions = useQuery({
+    queryKey: ['monitor-egress-options'],
+    queryFn: () => api<EgressOptions>('/monitors/egress/options'),
+  });
 
   const openIncident = health.data?.incidents.find((incident) => incident.monitorId === monitorId);
 
@@ -116,9 +124,17 @@ export function MonitorDetailPage() {
   }
 
   const runNow = useMutation({
-    mutationFn: () => api(`/monitors/${monitorId}/run`, { method: 'POST' }),
-    onSuccess: () => {
-      toast.success('Health check completed');
+    mutationFn: () =>
+      api<{ queued?: boolean; jobId?: string; region?: string | null; id?: string }>(
+        `/monitors/${monitorId}/run`,
+        { method: 'POST' },
+      ),
+    onSuccess: (result) => {
+      toast.success(
+        result.queued
+          ? `Check queued for ${result.region ?? 'the remote region'}`
+          : 'Health check completed',
+      );
       invalidate();
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -148,6 +164,8 @@ export function MonitorDetailPage() {
           intervalSeconds: editInterval,
           timeoutMs: editTimeout,
           failureThreshold: editThreshold,
+          egressMode: editEgressMode,
+          ...(editEgressMode === 'REGION' ? { region: editRegion } : {}),
           expectedStatusCodes: expected.length ? [...new Set(expected)] : [200],
         },
       });
@@ -225,6 +243,8 @@ export function MonitorDetailPage() {
                     setEditInterval(data.intervalSeconds);
                     setEditTimeout(data.timeoutMs);
                     setEditThreshold(data.failureThreshold);
+                    setEditEgressMode(data.egressMode);
+                    setEditRegion(data.region ?? '');
                     setEditCodes(data.expectedStatusCodes.join(','));
                     setEditOpen(true);
                   }}
@@ -438,6 +458,16 @@ export function MonitorDetailPage() {
               <KeyValue label="Timeout" value={`${data.timeoutMs} ms`} />
               <KeyValue label="Failure threshold" value={`${data.failureThreshold} checks`} />
               <KeyValue label="Service" value={data.service?.name ?? '—'} />
+              <KeyValue
+                label="Check origin"
+                value={
+                  data.egressMode === 'PROXY'
+                    ? 'Rotating proxy pool'
+                    : data.egressMode === 'REGION'
+                      ? `Region · ${data.region ?? 'unset'}`
+                      : 'API server IP'
+                }
+              />
               <KeyValue label="Next run" value={data.nextRunAt ? dateTime(data.nextRunAt) : 'Paused'} />
               <KeyValue label="Last check" value={relative(data.lastCheckedAt)} />
               <KeyValue label="Last latency" value={latency(data.lastLatencyMs)} />
@@ -556,11 +586,51 @@ export function MonitorDetailPage() {
                 />
               </div>
             </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-monitor-egress">Check origin</Label>
+                <NativeSelect
+                  id="edit-monitor-egress"
+                  value={editEgressMode}
+                  onChange={(event) => setEditEgressMode(event.target.value as EgressMode)}
+                >
+                  <option value="DEFAULT">API server IP</option>
+                  <option value="PROXY" disabled={!egressOptions.data?.proxy.enabled}>
+                    Rotating proxy pool
+                  </option>
+                  <option value="REGION" disabled={!egressOptions.data?.regions.length}>
+                    Checker region
+                  </option>
+                </NativeSelect>
+              </div>
+              {editEgressMode === 'REGION' ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-monitor-region">Region</Label>
+                  <NativeSelect
+                    id="edit-monitor-region"
+                    value={editRegion}
+                    onChange={(event) => setEditRegion(event.target.value)}
+                    required
+                  >
+                    <option value="">Select a region</option>
+                    {(egressOptions.data?.regions ?? []).map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                </div>
+              ) : null}
+            </div>
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => setEditOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" loading={updateMonitor.isPending}>
+              <Button
+                type="submit"
+                loading={updateMonitor.isPending}
+                disabled={editEgressMode === 'REGION' && !editRegion}
+              >
                 Save monitor
               </Button>
             </DialogFooter>

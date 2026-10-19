@@ -82,7 +82,7 @@ const OPERATIONS = [
 ];
 
 export function LandingPage() {
-  const { session } = useAuth();
+  const { user } = useAuth();
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-background">
@@ -104,7 +104,7 @@ export function LandingPage() {
             </a>
           </nav>
           <div className="flex items-center gap-2">
-            {session ? (
+            {user ? (
               <Button asChild size="sm">
                 <Link to="/overview">
                   Open workspace <ArrowRight />
@@ -143,8 +143,8 @@ export function LandingPage() {
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-3">
                 <Button asChild size="lg">
-                  <Link to={session ? '/overview' : '/signup'}>
-                    {session ? 'Open your workspace' : 'Create a workspace'} <ArrowRight />
+                  <Link to={user ? '/overview' : '/signup'}>
+                    {user ? 'Open your workspace' : 'Create a workspace'} <ArrowRight />
                   </Link>
                 </Button>
                 <Button asChild variant="outline" size="lg">
@@ -376,8 +376,8 @@ export class AppModule {}
             </p>
             <div className="mt-7 flex justify-center gap-3">
               <Button asChild size="lg">
-                <Link to={session ? '/overview' : '/signup'}>
-                  {session ? 'Open workspace' : 'Start monitoring'} <ArrowRight />
+                <Link to={user ? '/overview' : '/signup'}>
+                  {user ? 'Open workspace' : 'Start monitoring'} <ArrowRight />
                 </Link>
               </Button>
               <Button asChild variant="outline" size="lg">

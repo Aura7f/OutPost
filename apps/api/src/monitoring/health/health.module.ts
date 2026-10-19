@@ -4,13 +4,14 @@ import { MonitorsService } from './monitors.service';
 import { HealthCheckExecutor } from './health-check.executor';
 import { SafeHttpService } from './safe-http.service';
 import { SsrfGuard } from './ssrf-guard';
+import { EgressService } from './egress.service';
 import { ProjectsModule } from '../../projects/projects.module';
 import { NotificationsModule } from '../../notifications/notifications.module';
 
 @Module({
   imports: [ProjectsModule, NotificationsModule],
   controllers: [ProjectMonitorsController, MonitorsController, HealthController],
-  providers: [MonitorsService, HealthCheckExecutor, SafeHttpService, SsrfGuard],
-  exports: [HealthCheckExecutor, MonitorsService, SsrfGuard, SafeHttpService],
+  providers: [MonitorsService, HealthCheckExecutor, SafeHttpService, SsrfGuard, EgressService],
+  exports: [HealthCheckExecutor, MonitorsService, SsrfGuard, SafeHttpService, EgressService],
 })
 export class HealthModule {}

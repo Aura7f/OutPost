@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { authApi } from '@/lib/auth-api';
+import { errorMessage } from '@/lib/api';
+import { useAuth } from '@/contexts/auth-context';
 import { AuthShell } from '@/components/auth-shell';
 import { Button, Spinner } from '@/components/ui';
 
-/**
- * Supabase PKCE callback. The client may already have exchanged the code via
- * detectSessionInUrl; if not, exchange it here exactly once.
- */
 export function AuthCallbackPage() {
   const navigate = useNavigate();
+  const { refresh } = useAuth();
   const started = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -33,45 +32,47 @@ export function AuthCallbackPage() {
       }
 
       const type = params.get('type') || fragment.get('type');
-      const code = params.get('code');
       const requestedNext = params.get('next') || fragment.get('next');
       const next =
         requestedNext?.startsWith('/') && !requestedNext.startsWith('//')
           ? requestedNext
           : '/overview';
-      let { data, error: sessionError } = await supabase.auth.getSession();
 
-      if (!data.session && code) {
-        const exchanged = await supabase.auth.exchangeCodeForSession(code);
-        data = exchanged.data;
-        sessionError = exchanged.error;
-      }
+      const finish = (target: string) => {
+        setDone(true);
+        window.setTimeout(() => {
+          navigate(target, { replace: true });
+        }, 500);
+      };
 
-      if (sessionError) {
-        setError(sessionError.message);
-        return;
-      }
-      if (!data.session) {
-        // Give detectSessionInUrl a brief chance to finish the same exchange.
-        await new Promise((resolve) => window.setTimeout(resolve, 350));
-        const retry = await supabase.auth.getSession();
-        data = retry.data;
-        sessionError = retry.error;
-      }
+      const accessToken = fragment.get('access_token') || params.get('access_token');
+      const refreshToken = fragment.get('refresh_token') || params.get('refresh_token');
 
-      if (!data.session) {
+      if (!accessToken || !refreshToken) {
+        if (params.get('code')) {
+          setError('This link uses an unsupported sign-in flow. Request a new link to continue.');
+          return;
+        }
+        const profile = await refresh();
+        if (profile) {
+          finish(type === 'recovery' ? '/reset-password' : next);
+          return;
+        }
         setError('This link is invalid or has expired. Request a new sign-in or reset link.');
         return;
       }
 
-      setDone(true);
-      window.setTimeout(() => {
-        navigate(type === 'recovery' ? '/reset-password' : next, { replace: true });
-      }, 500);
+      try {
+        await authApi.exchangeSession(accessToken, refreshToken);
+        await refresh();
+        finish(type === 'recovery' ? '/reset-password' : next);
+      } catch (exchangeError) {
+        setError(errorMessage(exchangeError));
+      }
     }
 
     void complete();
-  }, [navigate]);
+  }, [navigate, refresh]);
 
   return (
     <AuthShell
@@ -79,7 +80,7 @@ export function AuthCallbackPage() {
       description={
         error
           ? 'Authentication links are single-use and expire quickly. Request a new one to continue.'
-          : 'Finishing the secure handshake with Supabase. This only takes a moment.'
+          : 'Finishing the secure handshake with the Outpost API. This only takes a moment.'
       }
       footer={
         <Link to="/login" className="font-medium text-foreground hover:underline">
@@ -108,7 +109,7 @@ export function AuthCallbackPage() {
           <p className="mt-1.5 max-w-xs text-xs leading-relaxed text-muted-foreground">
             {done
               ? 'Redirecting to your workspace.'
-              : 'We are exchanging the one-time code for a secure session.'}
+              : 'We are exchanging the one-time tokens for a secure session.'}
           </p>
         </div>
       )}

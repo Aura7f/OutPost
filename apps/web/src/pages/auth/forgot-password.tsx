@@ -1,13 +1,12 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, MailCheck } from 'lucide-react';
-import { supabase, supabaseConfigError } from '@/lib/supabase';
-import { useAuth } from '@/contexts/auth-context';
+import { ArrowLeft, MailCheck } from 'lucide-react';
+import { authApi } from '@/lib/auth-api';
+import { errorMessage } from '@/lib/api';
 import { AuthShell } from '@/components/auth-shell';
 import { Button, Input, Label } from '@/components/ui';
 
 export function ForgotPasswordPage() {
-  const { configured } = useAuth();
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -15,21 +14,16 @@ export function ForgotPasswordPage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!configured) {
-      setError(supabaseConfigError);
-      return;
-    }
     setLoading(true);
     setError(null);
-    const { error: authError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
-    setLoading(false);
-    if (authError) {
-      setError(authError.message);
-      return;
+    try {
+      await authApi.recover(email.trim());
+      setSent(true);
+    } catch (authError) {
+      setError(errorMessage(authError));
+    } finally {
+      setLoading(false);
     }
-    setSent(true);
   }
 
   return (
@@ -58,12 +52,6 @@ export function ForgotPasswordPage() {
         </div>
       ) : (
         <form onSubmit={submit} className="space-y-4">
-          {!configured ? (
-            <div className="flex gap-2 rounded-md border border-warning/25 bg-warning/5 p-3 text-xs leading-relaxed text-warning">
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              {supabaseConfigError}
-            </div>
-          ) : null}
           <div className="space-y-1.5">
             <Label htmlFor="email">Work email</Label>
             <Input

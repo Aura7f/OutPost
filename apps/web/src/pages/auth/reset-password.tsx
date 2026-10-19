@@ -2,14 +2,15 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, ArrowRight, Eye, EyeOff, KeyRound } from 'lucide-react';
 import { toast } from 'sonner';
-import { supabase, supabaseConfigError } from '@/lib/supabase';
+import { authApi } from '@/lib/auth-api';
+import { errorMessage } from '@/lib/api';
 import { useAuth } from '@/contexts/auth-context';
 import { AuthShell } from '@/components/auth-shell';
 import { Button, Input, Label, Spinner } from '@/components/ui';
 
 export function ResetPasswordPage() {
   const navigate = useNavigate();
-  const { configured } = useAuth();
+  const { refresh } = useAuth();
   const [ready, setReady] = useState(false);
   const [hasSession, setHasSession] = useState(false);
   const [password, setPassword] = useState('');
@@ -23,33 +24,18 @@ export function ResetPasswordPage() {
 
   useEffect(() => {
     let mounted = true;
-    void supabase.auth.getSession().then(({ data, error: sessionError }) => {
+    void refresh().then((profile) => {
       if (!mounted) return;
-      if (sessionError) setError(sessionError.message);
-      setHasSession(Boolean(data.session));
+      setHasSession(Boolean(profile));
       setReady(true);
-    });
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!mounted) return;
-      if (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
-        setHasSession(Boolean(session));
-        setReady(true);
-      }
     });
     return () => {
       mounted = false;
-      subscription.unsubscribe();
     };
-  }, []);
+  }, [refresh]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!configured) {
-      setError(supabaseConfigError);
-      return;
-    }
     if (password.length < 8) {
       setError('Use at least 8 characters for your password.');
       return;
@@ -60,14 +46,16 @@ export function ResetPasswordPage() {
     }
     setLoading(true);
     setError(null);
-    const { error: updateError } = await supabase.auth.updateUser({ password });
-    setLoading(false);
-    if (updateError) {
-      setError(updateError.message);
-      return;
+    try {
+      await authApi.resetPassword(password);
+      toast.success('Password updated. Your other sessions were kept intact.');
+      await refresh();
+      navigate('/overview', { replace: true });
+    } catch (updateError) {
+      setError(errorMessage(updateError));
+    } finally {
+      setLoading(false);
     }
-    toast.success('Password updated. Your other sessions were kept intact.');
-    navigate('/overview', { replace: true });
   }
 
   if (!ready) {

@@ -24,6 +24,7 @@ interface ClaimedJob {
   integrationId: string | null;
   reportId: string | null;
   reportScheduleId: string | null;
+  region: string | null;
   scheduledFor: Date;
   attempts: number;
   maxAttempts: number;
@@ -45,8 +46,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private readonly concurrency: number;
   private readonly lockTimeoutSeconds: number;
   private readonly defaultMaxAttempts: number;
+  private readonly workerRegion: string | null;
   private readonly activeJobs = new Set<string>();
   private localTimer?: NodeJS.Timeout;
+  private checkerTimer?: NodeJS.Timeout;
   private dispatching = false;
 
   constructor(
@@ -62,9 +65,25 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     this.concurrency = Number(config.get('MONITORING_CONCURRENCY', 5));
     this.lockTimeoutSeconds = Number(config.get('JOB_LOCK_TIMEOUT_SECONDS', 120));
     this.defaultMaxAttempts = Number(config.get('JOB_MAX_ATTEMPTS', 3));
+    this.workerRegion = config.get<string>('WORKER_REGION', '')?.trim() || null;
   }
 
   onModuleInit(): void {
+    if (this.workerRegion) {
+      const pollMs = Math.max(2, Number(this.config.get('CHECKER_POLL_SECONDS', 10))) * 1000;
+      this.logger.log(
+        `Checker worker enabled for region ${this.workerRegion} (poll=${pollMs}ms, concurrency=${this.concurrency})`,
+      );
+      this.checkerTimer = setInterval(() => {
+        void this.processQueue().catch((error) =>
+          this.logger.error(`Checker poll failed: ${(error as Error).message}`),
+        );
+      }, pollMs);
+      setTimeout(() => {
+        void this.processQueue().catch(() => undefined);
+      }, 3_000);
+      return;
+    }
     // In production Supabase Cron calls the secure dispatcher. Local interval
     // execution is opt-in for development and single-process self-hosting.
     if (this.config.get<string>('ALLOW_LOCAL_SCHEDULER') === 'true') {
@@ -83,6 +102,18 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy(): void {
     if (this.localTimer) clearInterval(this.localTimer);
+    if (this.checkerTimer) clearInterval(this.checkerTimer);
+  }
+
+  /** Checker-worker loop: recover stale leases and claim only this region's jobs. */
+  async processQueue(): Promise<number> {
+    if (!this.workerRegion) throw new Error('processQueue requires WORKER_REGION');
+    await this.recoverStaleJobs();
+    const capacity = Math.max(0, this.concurrency - this.activeJobs.size);
+    if (capacity === 0) return 0;
+    const jobs = await this.claimJobs(capacity);
+    if (jobs.length > 0) setImmediate(() => this.executeJobs(jobs));
+    return jobs.length;
   }
 
   async dispatch(): Promise<{
@@ -150,6 +181,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     ]);
     return {
       workerId: this.workerId,
+      workerRegion: this.workerRegion,
       concurrency: this.concurrency,
       activeJobs: this.activeJobs.size,
       jobs: byStatus,
@@ -162,7 +194,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private async recoverStaleJobs(): Promise<number> {
     const cutoff = new Date(Date.now() - this.lockTimeoutSeconds * 1000);
     const stale = await this.prisma.monitoringJob.findMany({
-      where: { status: JobStatus.RUNNING, lockedAt: { lt: cutoff } },
+      where: {
+        status: JobStatus.RUNNING,
+        lockedAt: { lt: cutoff },
+        ...(this.workerRegion ? { region: this.workerRegion } : { region: null }),
+      },
       select: { id: true, attempts: true, maxAttempts: true },
       take: 100,
     });
@@ -215,9 +251,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private async enqueueDueMonitors(now: Date): Promise<number> {
     return this.prisma.$transaction(async (tx) => {
       const due = await tx.$queryRaw<
-        Array<{ id: string; nextRunAt: Date | null; intervalSeconds: number }>
+        Array<{
+          id: string;
+          nextRunAt: Date | null;
+          intervalSeconds: number;
+          egressMode: string;
+          region: string | null;
+        }>
       >(Prisma.sql`
-        SELECT id, "nextRunAt", "intervalSeconds"
+        SELECT id, "nextRunAt", "intervalSeconds", "egressMode", region
         FROM "Monitor"
         WHERE active = true
           AND ("nextRunAt" IS NULL OR "nextRunAt" <= NOW())
@@ -242,6 +284,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
               status: 'QUEUED',
               dedupeKey: `health:${monitor.id}:${dueToken}`,
               monitorId: monitor.id,
+              region: monitor.egressMode === 'REGION' ? monitor.region : null,
               scheduledFor: now,
               maxAttempts: this.defaultMaxAttempts,
             },
@@ -422,12 +465,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private async claimJobs(limit: number): Promise<ClaimedJob[]> {
     if (limit <= 0) return [];
     try {
+      const regionFilter = this.workerRegion
+        ? Prisma.sql`AND region = ${this.workerRegion}`
+        : Prisma.sql`AND region IS NULL`;
       const jobs = await this.prisma.$queryRaw<ClaimedJob[]>(Prisma.sql`
         WITH picked AS (
           SELECT id
           FROM "MonitoringJob"
           WHERE status = 'QUEUED'::"JobStatus"
             AND "scheduledFor" <= NOW()
+            ${regionFilter}
           ORDER BY "scheduledFor" ASC
           LIMIT ${limit}
           FOR UPDATE SKIP LOCKED
@@ -442,7 +489,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         FROM picked
         WHERE j.id = picked.id
         RETURNING j.id, j.type, j."monitorId", j."integrationId", j."reportId",
-                  j."reportScheduleId", j."scheduledFor", j.attempts, j."maxAttempts"
+                  j."reportScheduleId", j.region, j."scheduledFor", j.attempts, j."maxAttempts"
       `);
       return jobs;
     } catch (error) {
@@ -522,7 +569,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     switch (job.type) {
       case 'HEALTH_CHECK':
         if (!job.monitorId) throw new Error('Health job has no monitor target');
-        return this.health.execute(job.monitorId, { scheduled: true, jobId: job.id });
+        return this.health.execute(job.monitorId, {
+          scheduled: true,
+          jobId: job.id,
+          region: job.region,
+        });
       case 'HEARTBEAT':
         if (!job.integrationId) throw new Error('Heartbeat job has no integration target');
         return this.heartbeat.executeScheduled(job.integrationId, job.id);

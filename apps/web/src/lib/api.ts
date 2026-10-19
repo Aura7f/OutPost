@@ -1,8 +1,15 @@
-import { supabase } from './supabase';
-
 const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 const API_PREFIX = '/v1';
 const TEAM_STORAGE_KEY = 'outpost.activeTeamId';
+const NO_REFRESH_PATHS = new Set([
+  '/auth/login',
+  '/auth/signup',
+  '/auth/refresh',
+  '/auth/logout',
+  '/auth/recover',
+  '/auth/resend-verification',
+  '/auth/callback',
+]);
 
 export const apiDocsUrl = `${API_BASE || 'http://localhost:4000'}/docs`;
 
@@ -57,14 +64,26 @@ export function queryString(
   return result ? `?${result}` : '';
 }
 
-async function authHeaders(): Promise<Headers> {
-  const headers = new Headers();
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  if (session?.access_token) {
-    headers.set('Authorization', `Bearer ${session.access_token}`);
+let refreshRequest: Promise<boolean> | null = null;
+
+export async function refreshSession(): Promise<boolean> {
+  if (!refreshRequest) {
+    refreshRequest = fetch(`${API_BASE}${API_PREFIX}/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    })
+      .then((response) => response.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshRequest = null;
+      });
   }
+  return refreshRequest;
+}
+
+function baseHeaders(): Headers {
+  const headers = new Headers();
   if (activeTeamId) headers.set('X-Team-Id', activeTeamId);
   return headers;
 }
@@ -74,10 +93,11 @@ export interface ApiOptions {
   body?: unknown;
   signal?: AbortSignal;
   headers?: Record<string, string>;
+  skipAuthRefresh?: boolean;
 }
 
 export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
-  const headers = await authHeaders();
+  const headers = baseHeaders();
   headers.set('Accept', 'application/json');
   for (const [key, value] of Object.entries(options.headers ?? {})) {
     headers.set(key, value);
@@ -91,12 +111,23 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
     body = JSON.stringify(options.body);
   }
 
-  const response = await fetch(`${API_BASE}${API_PREFIX}${path}`, {
-    method: options.method ?? (options.body !== undefined ? 'POST' : 'GET'),
-    headers,
-    body,
-    signal: options.signal,
-  });
+  const method = options.method ?? (options.body !== undefined ? 'POST' : 'GET');
+  const url = `${API_BASE}${API_PREFIX}${path}`;
+  const canRefresh = !options.skipAuthRefresh && !NO_REFRESH_PATHS.has(path);
+
+  const send = (): Promise<Response> =>
+    fetch(url, {
+      method,
+      headers,
+      body,
+      signal: options.signal,
+      credentials: 'include',
+    });
+
+  let response = await send();
+  if (response.status === 401 && canRefresh && (await refreshSession())) {
+    response = await send();
+  }
 
   if (!response.ok) {
     const contentType = response.headers.get('content-type') ?? '';
@@ -121,8 +152,10 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
       if (text && text.length < 500) message = text;
     }
     if (response.status === 401) {
-      // Let the auth listener decide; avoid signing out during a transient outage.
-      message = message === 'Unauthorized' ? 'Your session has expired. Please sign in again.' : message;
+      message =
+        message === 'Unauthorized' || message === 'Authentication required'
+          ? 'Your session has expired. Please sign in again.'
+          : message;
     }
     throw new ApiError(message, response.status, details);
   }
@@ -136,8 +169,14 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
 }
 
 export async function downloadFile(path: string, fallbackName: string): Promise<void> {
-  const headers = await authHeaders();
-  const response = await fetch(`${API_BASE}${API_PREFIX}${path}`, { headers });
+  const headers = baseHeaders();
+  const url = `${API_BASE}${API_PREFIX}${path}`;
+  const send = (): Promise<Response> =>
+    fetch(url, { headers, credentials: 'include' });
+  let response = await send();
+  if (response.status === 401 && (await refreshSession())) {
+    response = await send();
+  }
   if (!response.ok) {
     let message = `Download failed (${response.status})`;
     try {
@@ -152,14 +191,14 @@ export async function downloadFile(path: string, fallbackName: string): Promise<
   const disposition = response.headers.get('content-disposition') ?? '';
   const filenameMatch = /filename="?([^"]+)"?/.exec(disposition);
   const filename = filenameMatch?.[1] || fallbackName;
-  const url = URL.createObjectURL(blob);
+  const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
-  anchor.href = url;
+  anchor.href = objectUrl;
   anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(url);
+  URL.revokeObjectURL(objectUrl);
 }
 
 export function errorMessage(error: unknown): string {

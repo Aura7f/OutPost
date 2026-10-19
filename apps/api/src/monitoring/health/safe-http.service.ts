@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Agent, request } from 'undici';
+import { Agent, Dispatcher, ProxyAgent, request } from 'undici';
 import type { LookupFunction } from 'node:net';
 import { SsrfGuard, type ResolvedTarget } from './ssrf-guard';
 import { redactSecrets } from '../../common/crypto';
@@ -31,6 +31,7 @@ export class SafeHttpService {
     method: 'GET' | 'HEAD';
     expectedStatusCodes: number[];
     timeoutMs: number;
+    proxyUrl?: string | null;
   }): Promise<SafeHttpResult> {
     const startedAt = Date.now();
     const deadline = startedAt + Math.min(Math.max(input.timeoutMs, 1000), 30_000);
@@ -68,7 +69,7 @@ export class SafeHttpService {
         };
       }
 
-      const dispatcher = this.buildPinnedDispatcher(resolved.target);
+      const dispatcher = this.buildDispatcher(resolved.target, input.proxyUrl);
       try {
         const requestStarted = Date.now();
         const response = await request(resolved.url, {
@@ -88,6 +89,7 @@ export class SafeHttpService {
         const latencyMs = Date.now() - requestStarted;
         const statusCode = response.statusCode;
         const location = response.headers.location;
+        response.body.on('error', () => undefined);
         response.body.destroy();
 
         if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
@@ -191,7 +193,7 @@ export class SafeHttpService {
         error: redactSecrets((error as Error).message, 500),
       };
     }
-    const dispatcher = this.buildPinnedDispatcher(resolved.target);
+    const dispatcher = this.buildDispatcher(resolved.target, null);
     try {
       const response = await request(resolved.url, {
         method: 'POST',
@@ -214,6 +216,7 @@ export class SafeHttpService {
       for await (const chunk of response.body) {
         bytes += chunk.length;
         if (bytes > limit) {
+          response.body.on('error', () => undefined);
           response.body.destroy();
           return {
             ok: false,
@@ -258,11 +261,25 @@ export class SafeHttpService {
     }
   }
 
-  private buildPinnedDispatcher(target: ResolvedTarget | null): Agent {
+  private buildDispatcher(
+    target: ResolvedTarget | null,
+    proxyUrl?: string | null,
+  ): Dispatcher {
+    if (proxyUrl) {
+      // The target was already resolved and validated above; the proxy performs
+      // the outbound connection so its egress IP is used instead of ours.
+      return new ProxyAgent({ uri: proxyUrl });
+    }
     if (!target) return new Agent();
     // Pin the validated IP so the HTTP client cannot be redirected by a second
     // DNS answer (DNS rebinding). TLS SNI/Host remains the original hostname.
-    const pinnedLookup: LookupFunction = (_hostname, _options, callback) => {
+    const pinnedLookup: LookupFunction = (_hostname, options, callback) => {
+      // Node >=20 autoSelectFamily calls lookup with { all: true } and expects
+      // an array of addresses; otherwise a single (address, family) pair.
+      if (options?.all) {
+        callback(null, [{ address: target.address, family: target.family }], target.family);
+        return;
+      }
       callback(null, target.address, target.family);
     };
     return new Agent({

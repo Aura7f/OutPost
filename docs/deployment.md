@@ -16,14 +16,15 @@ The API is stateless: no Redis, local disk, or sticky sessions are needed. Postg
 ## 2. Create and configure Supabase
 
 1. Create a project at https://supabase.com.
-2. Record the project URL, anon/publishable key, pooled connection string, and direct connection string.
+2. Record the project URL, publishable/anon key, pooled connection string, and direct connection string. Outpost uses the publishable key server-side only.
 3. Enable Email authentication. Keep email confirmation enabled.
 4. In **Authentication → URL Configuration**:
    - Site URL: `https://app.yourdomain.com`
    - Redirect URLs:
      - `https://app.yourdomain.com/auth/callback`
-     - `https://app.yourdomain.com/reset-password`
      - `http://localhost:5173/auth/callback` for local development
+
+   Verification and recovery links both return to `/auth/callback`; the SPA routes recovery sessions to `/reset-password`.
 5. Choose a JWT signing model:
    - **New projects (recommended):** asymmetric signing keys. Leave `SUPABASE_JWT_SECRET` empty; Outpost uses JWKS.
    - **Legacy projects:** copy the JWT secret into `SUPABASE_JWT_SECRET`.
@@ -81,9 +82,11 @@ DATABASE_URL=postgresql://...
 DIRECT_URL=postgresql://...
 
 SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_ANON_KEY=sb_publishable_...   # publishable/anon only — never the secret key
 SUPABASE_JWT_SECRET=            # only for legacy HS256 projects
 SUPABASE_JWKS_URL=              # optional; derived from SUPABASE_URL when empty
 SUPABASE_JWT_AUDIENCE=authenticated
+AUTH_COOKIE_SAMESITE=lax        # strict, or none for cross-site HTTPS deployments
 
 ENCRYPTION_KEY=<base64 32 bytes>
 ENCRYPTION_KEY_OLD=             # only during key rotation
@@ -101,6 +104,30 @@ EMAIL_REPLY_TO=support@yourdomain.com
 
 OTEL_ENABLED=false
 ```
+
+### Optional: proxy and regional egress
+
+Monitors can check from the API host (default), through a rotating proxy pool, or from
+regional checker workers:
+
+```env
+# Rotated per check for monitors whose egress mode is PROXY
+MONITOR_PROXY_URLS=http://user:pass@proxy-a.example.com:8080,http://proxy-b.example.com:8080
+# Region ids offered in the monitor form
+CHECKER_REGIONS=ap-south-1,us-east-1,eu-west-1
+```
+
+Deploy the API as usual. For each region, run the same container image with no HTTP
+port and one extra process:
+
+```bash
+WORKER_REGION=ap-south-1 npm run start:checker --workspace @outpost/api
+```
+
+Checker workers read the same `DATABASE_URL`, claim only `HEALTH_CHECK` jobs for their
+region with `SKIP LOCKED`, and never dispatch, run reports, or serve HTTP. Keep
+`ALLOW_LOCAL_SCHEDULER=false` on workers. A region with no running worker leaves its
+monitors queued until a worker appears.
 
 Generate keys:
 
@@ -147,6 +174,8 @@ Terminate TLS at the load balancer. Forward `X-Forwarded-For` and set `TRUST_PRO
 - `X-Cron-Secret`
 - `Content-Type`
 
+Forward `Cookie` and `Set-Cookie` unchanged, and never cache `/v1/auth/*`.
+
 If the API sits behind a CDN, exclude `/v1/internal/*` from caching.
 
 ## 5. Deploy the web app
@@ -162,11 +191,9 @@ Publish `apps/web/dist`. Configure:
 
 ```env
 VITE_API_URL=https://api.yourdomain.com
-VITE_SUPABASE_URL=https://<project-ref>.supabase.co
-VITE_SUPABASE_ANON_KEY=<anon or publishable key>
 ```
 
-Vite inlines `VITE_*` values at build time. Rebuild after changing them.
+The web build contains no Supabase keys. Vite inlines `VITE_*` values at build time; rebuild after changing them.
 
 ### SPA routing
 
@@ -182,7 +209,9 @@ If the web and API share an origin, proxy `/v1` to the API and leave `VITE_API_U
 
 ### CORS
 
-Set `CORS_ORIGINS` to the exact web origin(s), comma-separated. Do not use `*` in production unless you intentionally allow any origin. Credentials are sent as bearer tokens, not cookies.
+Set `CORS_ORIGINS` to the exact web origin(s), comma-separated. Credentials must be enabled (Outpost does this) because the browser sends session cookies. Do not use `*` in production.
+
+The API sets `HttpOnly`, `SameSite=Lax`, `Secure` cookies in production. Keep the web and API on the same site (for example `app.yourdomain.com` and `api.yourdomain.com`) so the browser sends them. If they must be on different registrable domains, set `AUTH_COOKIE_SAMESITE=none`; both origins must use HTTPS, and browsers require third-party cookie support. Never cache `/v1/auth/*` responses.
 
 ## 6. Schedule jobs with Supabase Cron
 
