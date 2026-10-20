@@ -258,6 +258,60 @@ export class ErrorsService {
     };
   }
 
+  async sendTestError(
+    user: AuthenticatedUser,
+    team: TeamContext,
+    projectId: string,
+    url?: string,
+  ) {
+    const project = await this.prisma.project.findFirst({
+      where: { id: projectId, teamId: team.teamId },
+      select: { id: true, teamId: true, name: true, environment: true },
+    });
+    if (!project) throw new NotFoundException('Project not found');
+
+    const target = url?.trim() ? url.trim().split('?')[0].slice(0, 300) : null;
+    const message = target
+      ? `Synthetic test error sent from the Outpost dashboard for ${target}`
+      : 'Synthetic test error sent from the Outpost dashboard';
+
+    const result = await this.ingestOne(
+      project,
+      {
+        errorType: 'OutpostTestError',
+        message,
+        stackTrace: [
+          `OutpostTestError: ${message}`,
+          '    at sendTestError (/outpost/dashboard/errors)',
+        ].join('\n'),
+        serviceName: 'outpost-dashboard',
+        environment: project.environment,
+        httpStatus: 500,
+        path: target ?? '/dashboard/errors',
+        timestamp: new Date().toISOString(),
+        metadata: { source: 'dashboard', synthetic: true },
+      },
+      undefined,
+    );
+
+    await this.audit.log({
+      teamId: team.teamId,
+      actorId: user.profileId,
+      projectId: project.id,
+      action: 'project.test_error_sent',
+      resourceType: 'ErrorGroup',
+      resourceId: result.groupId,
+      metadata: { fingerprint: result.fingerprint, synthetic: true },
+    });
+
+    return {
+      accepted: 1,
+      newGroups: result.isNew ? 1 : 0,
+      groupId: result.groupId,
+      fingerprint: result.fingerprint,
+    };
+  }
+
   private async ingestOne(
     project: { id: string; teamId: string; name: string; environment: Environment },
     event: IngestErrorEventDto,

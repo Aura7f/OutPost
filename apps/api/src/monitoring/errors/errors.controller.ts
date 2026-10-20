@@ -18,6 +18,7 @@ import {
   ErrorGroupsQueryDto,
   ErrorOverviewQueryDto,
   IngestErrorsDto,
+  SendTestErrorDto,
   UpdateErrorGroupDto,
 } from './errors.dto';
 import { CurrentTeam, CurrentUser, MinRole, Public, TeamScoped } from '../../common/decorators';
@@ -55,6 +56,21 @@ export class ErrorsController {
   @Get('overview')
   overview(@CurrentTeam() team: TeamContext, @Query() query: ErrorOverviewQueryDto) {
     return this.errors.overview(team, query.projectId);
+  }
+
+  @Post('test')
+  @MinRole(TeamRole.ADMIN)
+  @ApiOperation({
+    summary: 'Create a synthetic error group to verify the dashboard pipeline',
+    description:
+      'Authenticated dashboard helper. Sends a sanitized test event without exposing the project ingestion key or triggering alert rules.',
+  })
+  sendTest(
+    @CurrentUser() user: AuthenticatedUser,
+    @CurrentTeam() team: TeamContext,
+    @Body() dto: SendTestErrorDto,
+  ) {
+    return this.errors.sendTestError(user, team, dto.projectId, dto.url);
   }
 
   @Get('groups')

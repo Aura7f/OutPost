@@ -56,7 +56,7 @@ const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
       { label: 'Overview', to: '/overview', icon: LayoutDashboard },
       { label: 'Projects', to: '/projects', icon: FolderKanban },
       { label: 'Health checks', to: '/monitors', icon: Activity },
-      { label: 'Errors', to: '/errors', icon: Bug },
+      // { label: 'Errors', to: '/errors', icon: Bug },
       { label: 'Incidents', to: '/incidents', icon: AlertTriangle },
     ],
   },

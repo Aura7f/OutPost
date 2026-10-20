@@ -12,6 +12,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -127,4 +128,16 @@ export class ErrorOverviewQueryDto {
   @IsOptional()
   @IsString()
   projectId?: string;
+}
+
+export class SendTestErrorDto {
+  @ApiProperty()
+  @IsUUID()
+  projectId: string;
+
+  @ApiPropertyOptional({ example: 'https://checkout.example.com/pay' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  url?: string;
 }

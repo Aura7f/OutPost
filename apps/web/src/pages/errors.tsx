@@ -1,10 +1,12 @@
 import { useDeferredValue, useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { Bug, RefreshCw, Search, ShieldCheck, TrendingDown } from 'lucide-react';
-import { api, queryString } from '@/lib/api';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Bug, FlaskConical, RefreshCw, Search, ShieldCheck, TrendingDown } from 'lucide-react';
+import { toast } from 'sonner';
+import { api, errorMessage, queryString } from '@/lib/api';
 import type { ErrorGroup, ErrorOverview, ErrorSeverity, ErrorStatus, Page } from '@/lib/types';
 import { useProjects } from '@/components/common';
+import { useTeam } from '@/hooks/use-team';
 import {
   EmptyState,
   ErrorBlock,
@@ -27,7 +29,14 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   Input,
+  Label,
   NativeSelect,
 } from '@/components/ui';
 import { ErrorTrendChart, SeverityPie } from '@/components/charts';
@@ -36,6 +45,8 @@ import { compactNumber, number, percent, relative, truncate } from '@/lib/format
 export function ErrorsPage() {
   const navigate = useNavigate();
   const projects = useProjects();
+  const queryClient = useQueryClient();
+  const { canManage } = useTeam();
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = searchParams.get('projectId') ?? '';
   const focusedGroupId = searchParams.get('groupId');
@@ -44,6 +55,8 @@ export function ErrorsPage() {
   const [status, setStatus] = useState<ErrorStatus | ''>('UNRESOLVED');
   const [severity, setSeverity] = useState<ErrorSeverity | ''>('');
   const [page, setPage] = useState(1);
+  const [testOpen, setTestOpen] = useState(false);
+  const [testUrl, setTestUrl] = useState('');
 
   useEffect(() => {
     if (focusedGroupId) navigate(`/errors/${focusedGroupId}`, { replace: true });
@@ -73,23 +86,60 @@ export function ErrorsPage() {
     value: row.groups,
   }));
 
+  const sendTest = useMutation({
+    mutationFn: () =>
+      api<{ accepted: number; newGroups: number; groupId: string }>('/errors/test', {
+        method: 'POST',
+        body: { projectId, url: testUrl.trim() || undefined },
+      }),
+    onSuccess: async (result) => {
+      setTestOpen(false);
+      setTestUrl('');
+      toast.success(
+        result.newGroups > 0
+          ? 'Test error sent — new error group created'
+          : 'Test error sent — existing test group updated',
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['error-overview'] }),
+        queryClient.invalidateQueries({ queryKey: ['error-groups'] }),
+        queryClient.invalidateQueries({ queryKey: ['project-dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['projects'] }),
+      ]);
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
   return (
     <div>
       <PageHeader
         title="Errors"
         description="Application errors grouped by sanitized fingerprint. Secrets, request bodies, and credentials are stripped at ingestion."
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void overview.refetch();
-              void groups.refetch();
-            }}
-            disabled={overview.isFetching || groups.isFetching}
-          >
-            <RefreshCw className={overview.isFetching || groups.isFetching ? 'animate-spin' : ''} /> Refresh
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {canManage ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setTestOpen(true)}
+                disabled={!projectId}
+                title={projectId ? undefined : 'Select a project to send a test error'}
+              >
+                <FlaskConical /> Send test error
+              </Button>
+            ) : null}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void overview.refetch();
+                void groups.refetch();
+              }}
+              disabled={overview.isFetching || groups.isFetching}
+            >
+              <RefreshCw className={overview.isFetching || groups.isFetching ? 'animate-spin' : ''} /> Refresh
+            </Button>
+          </div>
         }
       />
 
@@ -306,6 +356,48 @@ export function ErrorsPage() {
         error type, sanitized message, service, and environment. Stack samples are truncated and
         redacted. Never send request bodies, cookies, or credentials.
       </div>
+
+      <Dialog open={testOpen} onOpenChange={setTestOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Send test error</DialogTitle>
+            <DialogDescription>
+              Creates a synthetic sanitized error in the selected project. The URL is recorded as the
+              error path; Outpost does not call it. Alert rules are not triggered.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              sendTest.mutate();
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="test-error-url">URL or path (optional)</Label>
+              <Input
+                id="test-error-url"
+                value={testUrl}
+                onChange={(event) => setTestUrl(event.target.value)}
+                placeholder="https://api.example.com/checkout"
+                maxLength={500}
+                autoFocus
+              />
+              <p className="text-2xs text-muted-foreground">
+                Query strings are stripped. Leave empty to use the default test path.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={() => setTestOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={sendTest.isPending}>
+                <FlaskConical /> Send test error
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

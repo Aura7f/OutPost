@@ -62,6 +62,13 @@ describe('Outpost API (e2e smoke)', () => {
       .expect(401);
   });
 
+  it('protects the dashboard test-error helper', async () => {
+    await request(app.getHttpServer())
+      .post('/v1/errors/test')
+      .send({ projectId: '00000000-0000-4000-8000-000000000000' })
+      .expect(401);
+  });
+
   it('returns a safe 404 for unknown public report shares', async () => {
     const response = await request(app.getHttpServer())
       .get('/v1/public/reports/unknown-token')
